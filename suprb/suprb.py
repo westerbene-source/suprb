@@ -146,7 +146,6 @@ class SupRB(BaseRegressor):
         cleanup : bool
             Optional cleanup of unused rules and components after fitting. Can be used to reduce size if only the
             final model is relevant. Note that all information about the fitting process itself is removed.
-
         Returns
         -------
         self : BaseEstimator
@@ -251,26 +250,33 @@ class SupRB(BaseRegressor):
             self.is_error_ = True
             return True
 
-    def _discover_rules(self, X: np.ndarray, y: np.ndarray, n_rules: int):
+    def _discover_rules(self, X: np.ndarray, y: np.ndarray, n_rules: int, max_restarts: int = 10):
         """Performs the rule discovery / rule generation (RG) process."""
 
         self._log_to_stdout(f"Generating {n_rules} rules", priority=4)
-
-        # Update the current elitist
         self.rule_discovery_.elitist_ = self.solution_composition_.elitist()
 
-        # Update the random state
-        self.rule_discovery_.random_state = self.rule_discovery_seeds_[self.step_]
+        base_seed = self.rule_discovery_seeds_[self.step_]
+        retry_seeds = base_seed.spawn(max_restarts + 1)
 
-        # Generate new rules
-        new_rules = self.rule_discovery_.optimize(X, y, n_rules=n_rules)
+        new_rules = []
+        for attempt, seed in enumerate(retry_seeds):
+            self.rule_discovery_.random_state = seed
+            new_rules = self.rule_discovery_.optimize(X, y, n_rules=n_rules)
+            if new_rules:
+                break
+            self._log_to_stdout(
+                f"All {n_rules} newly discovered rules were subsumed; "
+                f"restarting RD (attempt {attempt + 1}/{max_restarts + 1})",
+                priority=4,
+            )
 
-        # Extend the pool with the new rules
         self.pool_.extend(new_rules)
 
         if not self.pool_:
             warnings.warn(
-                "The population is empty, even after generating rules. " "Solution optimization will be skipped.",
+                "The population is empty, even after generating rules. "
+                "Solution optimization will be skipped.",
                 PopulationEmptyWarning,
             )
 
@@ -281,7 +287,6 @@ class SupRB(BaseRegressor):
 
         # Update the random state
         self.solution_composition_.random_state = self.solution_composition_seeds_[self.step_]
-
         # Optimize
         self.solution_composition_.optimize(X, y)
 

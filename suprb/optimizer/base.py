@@ -1,46 +1,130 @@
-from __future__ import annotations
-
 from abc import ABCMeta, abstractmethod
-from typing import Union
+from typing import Optional
 
 import numpy as np
-from sklearn.base import BaseEstimator
+from joblib import Parallel, delayed
 
-from suprb.base import SolutionBase
-from suprb.utils import RandomState
+from suprb.solution import Solution
+from suprb.optimizer import BaseOptimizer
+from suprb.rule import Rule, RuleInit
+from suprb.rule.subsumption import RuleSubsumption
+from suprb.rule.matching import MatchingFunction
+from .acceptance import RuleAcceptance
+from .constraint import RuleConstraint
+from .origin import RuleOriginGeneration
+from ...utils import check_random_state, RandomState, spawn_random_states
 
 
-class BaseOptimizer(BaseEstimator, metaclass=ABCMeta):
-    """Finds an optimal `Solution`."""
+class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
+    """Base class of different methods to generate `Rule`s.
 
-    def __init__(self, random_state: int, n_jobs: int):
-        self.random_state = random_state
-        self.n_jobs = n_jobs
+    Parameters
+    ----------
+    n_iter: int
+        Iterations to evolve a rule.
+    origin_generation: RuleOriginGeneration
+        The selection process which decides on the next initial points.
+    init: RuleInit
+    acceptance: RuleAcceptance
+    constraint: RuleConstraint
+    random_state : int, RandomState instance or None, default=None
+        Pass an int for reproducible results across multiple function calls.
+    n_jobs: int
+        The number of threads / processes the optimization uses.
+    """
 
-    random_state_: RandomState
+    pool_: list[Rule]
+    elitist_: Solution
+
+    def __init__(
+        self,
+        n_iter: int,
+        origin_generation: RuleOriginGeneration,
+        init: RuleInit,
+        acceptance: RuleAcceptance,
+        constraint: RuleConstraint,
+        random_state: int,
+        n_jobs: int,
+        subsumption: RuleSubsumption = None,
+    ):
+        super().__init__(random_state=random_state, n_jobs=n_jobs)
+
+        self.n_iter = n_iter
+        self.origin_generation = origin_generation
+        self.init = init
+        self.acceptance = acceptance
+        self.constraint = constraint
+        self.subsumption = subsumption
+
+    def _filter_invalid_rules(self, X: np.ndarray, y: np.ndarray, rules: list[Rule]) -> list[Rule]:
+        return list(
+            filter(
+                lambda rule: rule is not None and self.acceptance(rule=rule, X=X, y=y),
+                rules,
+            )
+        )
+    
+
+    def _apply_subsumption(self, rules: list[Rule]) -> list[Rule]:
+        
+        if self.subsumption is None:
+            return rules
+
+        to_append = []
+        for new_rule in rules:
+            keep, replace_idx = self.subsumption(new_rule, self.pool_)
+            if not keep:
+                continue
+            if replace_idx is not None:
+                self.pool_[replace_idx] = new_rule  # in-place: length and all other indices unchanged
+            else:
+                to_append.append(new_rule)
+        return to_append
 
     @abstractmethod
-    def optimize(self, X: np.ndarray, y: np.ndarray, **kwargs) -> Union[SolutionBase, list[SolutionBase], None]:
-        """Optimizes the fitness of `Solutions`.
-
-        Parameters
-        ----------
-        X: np.ndarray
-            Input values.
-        y: np.ndarray
-            Target values.
-
-        Returns
-        -------
-        elitist
-            Returns the best solution(s) found.
-        """
+    def optimize(self, X: np.ndarray, y: np.ndarray, n_rules: int = 1) -> list[Rule]:
         pass
 
-    def _reset(self):
-        """Reset internal data-dependent state of the optimizer, if necessary.
 
-        __init__ parameters are not touched.
-        """
-        if hasattr(self, "random_state_"):
-            del self.random_state_
+class ParallelSingleRuleDiscovery(RuleDiscovery, metaclass=ABCMeta):
+    """
+    Implements basic functionality to generate several `Rule`s in parallel.
+    The optimization process is assumed to generate exactly one rule for every origin data sample.
+    """
+
+    def optimize(self, X: np.ndarray, y: np.ndarray, n_rules: int = 1) -> list[Rule]:
+        self.random_state_ = check_random_state(self.random_state)
+        random_states = spawn_random_states(self.random_state_, n=n_rules)
+
+        origins = self.origin_generation(
+            n_rules=n_rules,
+            X=X,
+            y=y,
+            pool=self.pool_,
+            elitist=self.elitist_,
+            random_state=self.random_state_,
+        )
+
+        initial_rules = []
+        for origin in origins:
+            initial_rule = self.init(mean=origin, random_state=self.random_state_)
+            initial_rules.append(self.constraint(initial_rule).fit(X, y))
+
+        with Parallel(n_jobs=self.n_jobs) as parallel:
+            rules = parallel(
+                delayed(self._optimize)(X=X, y=y, initial_rule=initial_rule, random_state=random_state)
+                for initial_rule, random_state in zip(initial_rules, random_states)
+            )
+
+        valid_rules = self._filter_invalid_rules(X=X, y=y, rules=rules)
+        return self._apply_subsumption(valid_rules)
+
+    @abstractmethod
+    def _optimize(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        initial_rule: Rule,
+        random_state: RandomState,
+    ) -> Optional[Rule]:
+        pass

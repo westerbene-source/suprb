@@ -109,7 +109,8 @@ class NoveltySearch(RuleDiscovery):
 
         rules = self._optimize(X=X, y=y, n_rules=n_rules)
 
-        return self._filter_invalid_rules(X=X, y=y, rules=rules)
+        valid_rules = self._filter_invalid_rules(X=X, y=y, rules=rules)
+        return self._apply_subsumption(valid_rules)
 
     def _optimize(self, X: np.ndarray, y: np.ndarray, n_rules: int) -> list[Rule]:
         """Steps of the novelty Search Algorithm containing:
