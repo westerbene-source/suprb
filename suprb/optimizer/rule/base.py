@@ -7,6 +7,7 @@ from joblib import Parallel, delayed
 from suprb.solution import Solution
 from suprb.optimizer import BaseOptimizer
 from suprb.rule import Rule, RuleInit
+from suprb.rule.subsumption import RuleSubsumption
 from suprb.rule.matching import MatchingFunction
 from .acceptance import RuleAcceptance
 from .constraint import RuleConstraint
@@ -44,6 +45,7 @@ class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
         constraint: RuleConstraint,
         random_state: int,
         n_jobs: int,
+        subsumption: RuleSubsumption = None,
     ):
         super().__init__(random_state=random_state, n_jobs=n_jobs)
 
@@ -52,6 +54,7 @@ class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
         self.init = init
         self.acceptance = acceptance
         self.constraint = constraint
+        self.subsumption = subsumption
 
     def _filter_invalid_rules(self, X: np.ndarray, y: np.ndarray, rules: list[Rule]) -> list[Rule]:
         return list(
@@ -60,6 +63,23 @@ class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
                 rules,
             )
         )
+    
+
+    def _apply_subsumption(self, rules: list[Rule]) -> list[Rule]:
+        
+        if self.subsumption is None:
+            return rules
+
+        to_append = []
+        for new_rule in rules:
+            keep, replace_idx = self.subsumption(new_rule, self.pool_)
+            if not keep:
+                continue
+            if replace_idx is not None:
+                self.pool_[replace_idx] = new_rule  # in-place: length and all other indices unchanged
+            else:
+                to_append.append(new_rule)
+        return to_append
 
     @abstractmethod
     def optimize(self, X: np.ndarray, y: np.ndarray, n_rules: int = 1) -> list[Rule]:
@@ -96,7 +116,8 @@ class ParallelSingleRuleDiscovery(RuleDiscovery, metaclass=ABCMeta):
                 for initial_rule, random_state in zip(initial_rules, random_states)
             )
 
-        return self._filter_invalid_rules(X=X, y=y, rules=rules)
+        valid_rules = self._filter_invalid_rules(X=X, y=y, rules=rules)
+        return self._apply_subsumption(valid_rules)
 
     @abstractmethod
     def _optimize(
