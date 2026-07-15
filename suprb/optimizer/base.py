@@ -1,130 +1,108 @@
+from __future__ import annotations
+
 from abc import ABCMeta, abstractmethod
-from typing import Optional
+from typing import Union
 
 import numpy as np
-from joblib import Parallel, delayed
+from sklearn.base import RegressorMixin, clone
+from sklearn.metrics import mean_squared_error
 
-from suprb.solution import Solution
-from suprb.optimizer import BaseOptimizer
-from suprb.rule import Rule, RuleInit
-from suprb.rule.subsumption import RuleSubsumption
-from suprb.rule.matching import MatchingFunction
-from .acceptance import RuleAcceptance
-from .constraint import RuleConstraint
-from .origin import RuleOriginGeneration
-from ...utils import check_random_state, RandomState, spawn_random_states
+from suprb.base import SolutionBase
+from suprb.fitness import BaseFitness
+from .matching import MatchingFunction
 
 
-class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
-    """Base class of different methods to generate `Rule`s.
+class RuleFitness(BaseFitness, metaclass=ABCMeta):
+    """Evaluates the fitness of a `Rule`."""
+
+    @abstractmethod
+    def __call__(self, rule: Rule) -> float:
+        pass
+
+
+class Rule(SolutionBase):
+    """A rule that fits the input data in a certain interval.
 
     Parameters
     ----------
-    n_iter: int
-        Iterations to evolve a rule.
-    origin_generation: RuleOriginGeneration
-        The selection process which decides on the next initial points.
-    init: RuleInit
-    acceptance: RuleAcceptance
-    constraint: RuleConstraint
-    random_state : int, RandomState instance or None, default=None
-        Pass an int for reproducible results across multiple function calls.
-    n_jobs: int
-        The number of threads / processes the optimization uses.
+    match: MatchingFunction
+        The function this rule will use the determine the subset of input
+        data that this rule governs (will be fitted on and predict)
+    input_space: np.ndarray
+        The bounds of the input space `X`.
+    model: RegressorMixin
+        Local model used to fit an interval.
     """
 
-    pool_: list[Rule]
-    elitist_: Solution
+    experience_: float
+    match_set_: np.ndarray
+    pred_: Union[np.ndarray, None]  # only the prediction of matching points, so of x[match_]
 
     def __init__(
         self,
-        n_iter: int,
-        origin_generation: RuleOriginGeneration,
-        init: RuleInit,
-        acceptance: RuleAcceptance,
-        constraint: RuleConstraint,
-        random_state: int,
-        n_jobs: int,
-        subsumption: RuleSubsumption = None,
+        match: MatchingFunction,
+        input_space: np.ndarray,
+        model: RegressorMixin,
+        fitness: RuleFitness,
     ):
-        super().__init__(random_state=random_state, n_jobs=n_jobs)
+        self.match = match
+        self.input_space = input_space
+        self.model = model
+        self.fitness = fitness
+        self.numerosity_ = 1
 
-        self.n_iter = n_iter
-        self.origin_generation = origin_generation
-        self.init = init
-        self.acceptance = acceptance
-        self.constraint = constraint
-        self.subsumption = subsumption
+    def fit(self, X: np.ndarray, y: np.ndarray) -> Rule:
 
-    def _filter_invalid_rules(self, X: np.ndarray, y: np.ndarray, rules: list[Rule]) -> list[Rule]:
-        return list(
-            filter(
-                lambda rule: rule is not None and self.acceptance(rule=rule, X=X, y=y),
-                rules,
-            )
+        # Match input data
+        match_set = self.match(X)
+
+        # No reason to fit if no data point matches
+        if not np.any(match_set):
+            self.is_fitted_ = False
+            self.error_ = np.inf
+            self.fitness_ = -np.inf
+            self.experience_ = 0
+            self.pred_ = np.array([])
+            self.match_set_ = match_set
+            return self
+
+        # No reason to refit if matched data points did not change
+        if hasattr(self, "match_set_"):
+            if (self.match_set_ == match_set).all():
+                self.is_fitted_ = True
+                return self
+
+        self.match_set_ = match_set
+
+        # Get all data points which match the bounds.
+        X, y = X[self.match_set_], y[self.match_set_]
+
+        # Create and fit the model
+        self.model.fit(X, y)
+
+        self.pred_ = self.model.predict(X)
+        self.error_ = max(mean_squared_error(y, self.pred_), 1e-4)  # TODO: make min a parameter?
+        self.fitness_ = self.fitness(self)
+        self.experience_ = float(X.shape[0])
+
+        self.is_fitted_ = True
+        return self
+
+    @property
+    def volume_(self):
+        return self.match.volume_
+
+    def predict(self, X: np.ndarray):
+        return self.model.predict(X)
+
+    def clone(self, **kwargs) -> Rule:
+        args = dict(
+            match=self.match.copy() if "match" not in kwargs else None,
+            input_space=self.input_space,
+            model=clone(self.model) if "model" not in kwargs else None,
+            fitness=self.fitness,
         )
-    
+        return Rule(**(args | kwargs))
 
-    def _apply_subsumption(self, rules: list[Rule]) -> list[Rule]:
-        
-        if self.subsumption is None:
-            return rules
-
-        to_append = []
-        for new_rule in rules:
-            keep, replace_idx = self.subsumption(new_rule, self.pool_)
-            if not keep:
-                continue
-            if replace_idx is not None:
-                self.pool_[replace_idx] = new_rule  # in-place: length and all other indices unchanged
-            else:
-                to_append.append(new_rule)
-        return to_append
-
-    @abstractmethod
-    def optimize(self, X: np.ndarray, y: np.ndarray, n_rules: int = 1) -> list[Rule]:
-        pass
-
-
-class ParallelSingleRuleDiscovery(RuleDiscovery, metaclass=ABCMeta):
-    """
-    Implements basic functionality to generate several `Rule`s in parallel.
-    The optimization process is assumed to generate exactly one rule for every origin data sample.
-    """
-
-    def optimize(self, X: np.ndarray, y: np.ndarray, n_rules: int = 1) -> list[Rule]:
-        self.random_state_ = check_random_state(self.random_state)
-        random_states = spawn_random_states(self.random_state_, n=n_rules)
-
-        origins = self.origin_generation(
-            n_rules=n_rules,
-            X=X,
-            y=y,
-            pool=self.pool_,
-            elitist=self.elitist_,
-            random_state=self.random_state_,
-        )
-
-        initial_rules = []
-        for origin in origins:
-            initial_rule = self.init(mean=origin, random_state=self.random_state_)
-            initial_rules.append(self.constraint(initial_rule).fit(X, y))
-
-        with Parallel(n_jobs=self.n_jobs) as parallel:
-            rules = parallel(
-                delayed(self._optimize)(X=X, y=y, initial_rule=initial_rule, random_state=random_state)
-                for initial_rule, random_state in zip(initial_rules, random_states)
-            )
-
-        valid_rules = self._filter_invalid_rules(X=X, y=y, rules=rules)
-        return self._apply_subsumption(valid_rules)
-
-    @abstractmethod
-    def _optimize(
-        self,
-        X: np.ndarray,
-        y: np.ndarray,
-        initial_rule: Rule,
-        random_state: RandomState,
-    ) -> Optional[Rule]:
-        pass
+    def _more_str_attributes(self) -> dict:
+        return {"experience": self.experience_}
