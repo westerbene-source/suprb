@@ -250,7 +250,7 @@ class SupRB(BaseRegressor):
             self.is_error_ = True
             return True
 
-    def _discover_rules(self, X: np.ndarray, y: np.ndarray, initial: bool):
+    def _discover_rules(self, X: np.ndarray, y: np.ndarray, initial: bool, max_restarts: int = 10):
         """Performs the rule discovery / rule generation (RG) process."""
 
         n_rules = self.n_initial_rules if initial else self.n_rules
@@ -263,6 +263,9 @@ class SupRB(BaseRegressor):
             self.rule_discovery_.random_state = self.initial_rule_seeds_[0]
         else:
             self.rule_discovery_.random_state = self.rule_discovery_seeds_[self.step_]
+
+        base_seed = self.rule_discovery_seeds_[self.step_]
+        retry_seeds = base_seed.spawn(max_restarts + 1)
 
         new_rules = []
         for attempt, seed in enumerate(retry_seeds):

@@ -65,14 +65,14 @@ class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
         )
     
 
-    def _apply_subsumption(self, rules: list[Rule]) -> list[Rule]:
+    def _apply_subsumption(self, X: np.ndarray, y: np.ndarray, rules: list[Rule]) -> list[Rule]:
         
         if self.subsumption is None:
             return rules
 
         to_append = []
         for new_rule in rules:
-            keep, replace_idx = self.subsumption(new_rule, self.pool_)
+            keep, replace_idx = self.subsumption(new_rule, self.pool_, X, y)
             if not keep:
                 continue
             if replace_idx is not None:
@@ -117,7 +117,7 @@ class ParallelSingleRuleDiscovery(RuleDiscovery, metaclass=ABCMeta):
             )
 
         valid_rules = self._filter_invalid_rules(X=X, y=y, rules=rules)
-        return self._apply_subsumption(valid_rules)
+        return self._apply_subsumption(X, y, valid_rules)
 
     @abstractmethod
     def _optimize(

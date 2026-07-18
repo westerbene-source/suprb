@@ -4,6 +4,8 @@ from typing import Optional
 
 import numpy as np
 
+from sklearn.metrics import mean_squared_error
+
 from suprb.base import BaseComponent
 from .base import Rule
 from .matching import OrderedBound, UnorderedBound, CenterSpread, MinPercentage
@@ -32,6 +34,13 @@ def get_effective_bounds(match) -> np.ndarray:
 def bounds_contains(outer: np.ndarray, inner: np.ndarray) -> bool:
     """True if `outer` geometrically contains `inner` on every dimension."""
     return bool(np.all(outer[:, 0] <= inner[:, 0]) and np.all(outer[:, 1] >= inner[:, 1]))
+
+
+def local_error_on_subset(containing_rule: Rule, X: np.ndarray, y: np.ndarray, subset_mask: np.ndarray) -> float:
+
+        X_sub, y_sub = X[subset_mask], y[subset_mask]
+        pred_sub = containing_rule.predict(X_sub)
+        return max(mean_squared_error(y_sub, pred_sub), 1e-4)
 
 
 class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
@@ -78,26 +87,11 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
         `loser`'s numerosity is folded into `winner`."""
         pass
 
-    def __call__(self, new_rule: Rule, pool: list[Rule]) -> tuple[bool, Optional[int]]:
-        """
-        Check `new_rule` against every rule currently in `pool`.
 
-        Returns
-        -------
-        keep_new_rule: bool
-            Whether `new_rule` should be added to the pool at all (either
-            appended or used to replace a slot).
-        replace_idx: Optional[int]
-            If not None, `new_rule` should overwrite `pool[replace_idx]` in
-            place (list length unchanged) rather than being appended.
-            If None and keep_new_rule is True, `new_rule` is genuinely new
-            and should be appended normally.
-        """
+    def __call__(self, new_rule: Rule, pool: list[Rule], X: np.ndarray, y: np.ndarray) -> tuple[bool, Optional[int]]:
         new_bounds = get_effective_bounds(new_rule.match)
 
-        # --- Pass 1: does any existing pool rule already dominate new_rule
-        # outright? Checked first -- takes priority over new_rule replacing
-        # anything else.
+        # --- Pass 1: does any existing pool rule dominate new_rule outright?
         for pool_rule in pool:
             pool_bounds = get_effective_bounds(pool_rule.match)
 
@@ -105,12 +99,16 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
             if not pool_contains_new:
                 continue
 
-            pool_at_least_as_accurate = pool_rule.error_ <= new_rule.error_ * (1 + self.tolerance)
+            # pool_rule's error RESTRICTED to new_rule's region, not pool_rule's
+            # own whole-region error_ -- this is the fix.
+            pool_local_error = local_error_on_subset(pool_rule, X, y, new_rule.match_set_)
+            pool_at_least_as_accurate = pool_local_error <= new_rule.error_ * (1 + self.tolerance)
             if not pool_at_least_as_accurate:
                 continue
 
             new_contains_pool = bounds_contains(new_bounds, pool_bounds)
-            new_at_least_as_accurate = new_rule.error_ <= pool_rule.error_ * (1 + self.tolerance)
+            new_local_error = local_error_on_subset(new_rule, X, y, pool_rule.match_set_)
+            new_at_least_as_accurate = new_local_error <= pool_rule.error_ * (1 + self.tolerance)
             mutual = new_contains_pool and new_at_least_as_accurate
 
             if mutual:
@@ -119,14 +117,12 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
                     pool_rule.numerosity_ += new_rule.numerosity_
                     return False, None
                 else:
-                    continue  # new_rule wins this match; keep checking the rest
+                    continue
             else:
                 pool_rule.numerosity_ += new_rule.numerosity_
                 return False, None
 
-        # --- Pass 2: no rule dominates new_rule outright. Does new_rule
-        # dominate any existing pool rule(s)? Fold ALL such rules'
-        # numerosity into new_rule, but only replace the FIRST one found.
+        # --- Pass 2: does new_rule dominate any existing pool rule(s)?
         replace_idx: Optional[int] = None
         for idx, pool_rule in enumerate(pool):
             pool_bounds = get_effective_bounds(pool_rule.match)
@@ -135,7 +131,10 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
             if not new_contains_pool:
                 continue
 
-            new_at_least_as_accurate = new_rule.error_ <= pool_rule.error_ * (1 + self.tolerance)
+            # new_rule's error RESTRICTED to pool_rule's region -- the fix,
+            # applied symmetrically here too.
+            new_local_error = local_error_on_subset(new_rule, X, y, pool_rule.match_set_)
+            new_at_least_as_accurate = new_local_error <= pool_rule.error_ * (1 + self.tolerance)
             if not new_at_least_as_accurate:
                 continue
 
