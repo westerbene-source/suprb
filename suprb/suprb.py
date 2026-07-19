@@ -121,20 +121,32 @@ class SupRB(BaseRegressor):
         self.early_stopping_patience = early_stopping_patience
         self.early_stopping_delta = early_stopping_delta
 
-    def check_early_stopping(self):
-        if self.early_stopping_patience > 0:
-            fitness_diff = self.solution_composition_.elitist().fitness_ - self.previous_fitness_
+    def _current_convergence_metric(self):
+        if hasattr(self.solution_composition_, "hypervolume"):
+            return self.solution_composition_.hypervolume()
+        return self.solution_composition_.elitist().fitness_
 
-            if fitness_diff > self.early_stopping_delta:
+    def check_early_stopping(self):
+
+        if self.early_stopping_patience <= 0:
+            return False
+        
+        current = self._current_convergence_metric()
+        print(f"current Hypervolume  elitist fittnes {current}")
+
+        fitness_diff = current - self.previous_fitness_
+
+
+        if fitness_diff > self.early_stopping_delta:
                 self.early_stopping_counter_ = 0
-            else:
-                self.early_stopping_counter_ += 1
-                if self.early_stopping_patience <= self.early_stopping_counter_:
-                    print(
-                        f"Execution was stopped early after {self.early_stopping_patience} cycles with no significant changes."
-                    )
-                    print(f"The elitist fitness value was: {self.previous_fitness_}")
-                    return True
+        else:
+            self.early_stopping_counter_ += 1
+            if self.early_stopping_patience <= self.early_stopping_counter_:
+                print(
+                    f"Execution was stopped early after {self.early_stopping_patience} cycles with no significant changes."
+                )
+                print(f"The elitist fitness value was: {self.previous_fitness_}")
+                return True
         return False
 
     def fit(self, X: np.ndarray, y: np.ndarray, cleanup=False):
@@ -218,7 +230,7 @@ class SupRB(BaseRegressor):
             if self.check_early_stopping():
                 break
 
-            self.previous_fitness_ = self.solution_composition_.elitist().fitness_
+            self.previous_fitness_ = self._current_convergence_metric()
 
         self.elitist_ = self.solution_composition_.elitist().clone()
         self.is_fitted_ = True
