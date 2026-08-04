@@ -46,37 +46,13 @@ def local_error_on_subset(containing_rule: Rule, X: np.ndarray, y: np.ndarray, s
 class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
     """
     Decides, for a newly generated rule, whether it subsumes or is subsumed
-    by rules already present in the pool (concept doc Section 2.2).
+    by rules already present in the pool.
 
-    IMPORTANT ARCHITECTURAL CONSTRAINT: the pool must never shrink or
-    reorder during training. Solution genomes are boolean arrays indexed
-    positionally into the pool, and the existing padding machinery
-    (SolutionInit.pad / SolutionArchive.pad / padding_size) only ever
-    APPENDS zeros when the pool grows -- it has no way to handle a rule
-    being deleted or the list being reordered mid-training. Doing so
-    silently desyncs every existing genome's bit-to-rule mapping without
-    raising an error. See padding_size's own docstring: "after the pool
-    was expanded" -- growth is the only case this framework supports.
-
-    Consequently this component NEVER removes rules from the pool. It only:
       (a) discards the new rule entirely, if an existing pool rule already
           subsumes it, or
       (b) overwrites a single existing pool slot in place (same index, same
           list length) with the new rule, if the new rule subsumes it, or
       (c) leaves the new rule to be appended normally, if neither applies.
-
-    CAVEAT: if a single new rule subsumes MULTIPLE existing pool rules,
-    only one of them can be physically replaced (there is only one new
-    rule to put in its place). The other subsumed rules have their
-    numerosity folded into the new rule for bookkeeping purposes, but
-    remain physically present in the pool as stale entries -- they are
-    NOT fully pruned. Achieving full removal in that case would require
-    also implementing genome shrinkage in SolutionInit/SolutionArchive,
-    which is a separate, larger change beyond this component's scope.
-
-    Subclasses implement `resolve_mutual`, the tie-break policy used only
-    when two rules satisfy the subsumption condition in BOTH directions at
-    once (e.g. identical or near-identical matching regions).
     """
 
     tolerance: float = 0.0  # relative error slack; 0.0 = strict, matches concept doc
@@ -99,8 +75,6 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
             if not pool_contains_new:
                 continue
 
-            # pool_rule's error RESTRICTED to new_rule's region, not pool_rule's
-            # own whole-region error_ -- this is the fix.
             pool_local_error = local_error_on_subset(pool_rule, X, y, new_rule.match_set_)
             pool_at_least_as_accurate = pool_local_error <= new_rule.error_ * (1 + self.tolerance)
             if not pool_at_least_as_accurate:
@@ -131,8 +105,6 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
             if not new_contains_pool:
                 continue
 
-            # new_rule's error RESTRICTED to pool_rule's region -- the fix,
-            # applied symmetrically here too.
             new_local_error = local_error_on_subset(new_rule, X, y, pool_rule.match_set_)
             new_at_least_as_accurate = new_local_error <= pool_rule.error_ * (1 + self.tolerance)
             if not new_at_least_as_accurate:
