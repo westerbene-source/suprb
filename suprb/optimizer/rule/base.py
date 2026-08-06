@@ -70,13 +70,17 @@ class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
         if self.subsumption is None:
             return rules
 
-        to_append = []
+        to_append: list[Rule] = []
         for new_rule in rules:
-            keep, replace_idx = self.subsumption(new_rule, self.pool_, X, y)
+            effective_pool = self.pool_ + to_append
+            keep, replace_idx = self.subsumption(new_rule, effective_pool, X, y)
             if not keep:
                 continue
             if replace_idx is not None:
-                self.pool_[replace_idx] = new_rule  # in-place: length and all other indices unchanged
+                if replace_idx < len(self.pool_):
+                    self.pool_[replace_idx] = new_rule          # replaces an existing pool rule
+                else:
+                    to_append[replace_idx - len(self.pool_)] = new_rule  # replaces a sibling new rule
             else:
                 to_append.append(new_rule)
         return to_append
