@@ -55,7 +55,7 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
       (c) leaves the new rule to be appended normally, if neither applies.
     """
 
-    tolerance: float = 0.0  # relative error slack; 0.0 = strict, matches concept doc
+    tolerance: float = 0.0  
 
     @abstractmethod
     def resolve_mutual(self, rule_a: Rule, rule_b: Rule) -> tuple[Rule, Rule]:
