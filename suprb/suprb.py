@@ -71,7 +71,16 @@ class SupRB(BaseRegressor):
         Sets the patience for how many iteration we try to find a better result before we do an early stopping (-1 disabling the early stopping).
     early_stopping_delta: int
         The current fitness needs to be higher than this delta of the previous iteration fitness to be considered a "better" iteration
+    convergence_metric: str or callable, default=None
+        Metric used for early stopping and adaptive extra rules. Only relevant
+        if early_stopping_patience > 0 or extra_rules_patience > 0.
+        - "hypervolume": solution_composition_.hypervolume()
+        - "fitness": fitness of the current elitist
+        - callable: called with solution_composition_, must return a float
+        - None: "hypervolume" if the solution composition provides it,
+          otherwise "fitness" (the previous behaviour)
     """
+
 
     step_: int = 0
 
@@ -109,6 +118,7 @@ class SupRB(BaseRegressor):
         early_stopping_delta: float = 0,
         extra_rules_patience : int = -1,
         extra_rules_delta: int = 0,
+        convergence_metric: str = None,
     ):
         self.n_iter = n_iter
         self.n_initial_rules = n_initial_rules
@@ -124,10 +134,33 @@ class SupRB(BaseRegressor):
         self.early_stopping_delta = early_stopping_delta
         self.extra_rules_patience = extra_rules_patience
         self.extra_rules_delta = extra_rules_delta
+        self.convergence_metric = convergence_metric
 
+    def _convergence_enabled(self):
+        return self.early_stopping_patience > 0 or self.extra_rules_patience > 0
 
+    def _resolve_convergence_metric(self):
+        metric = self.convergence_metric
+        if callable(metric):
+            return metric
+        if metric is None:
+            return "hypervolume" if hasattr(self.solution_composition_, "hypervolume") else "fitness"
+        if metric not in ("hypervolume", "fitness"):
+            raise ValueError(
+                f"Unknown convergence_metric {metric!r}; use 'hypervolume', 'fitness' or a callable."
+            )
+        if metric == "hypervolume" and not hasattr(self.solution_composition_, "hypervolume"):
+            raise ValueError(
+                f"convergence_metric='hypervolume' requires a solution composition with a "
+                f"hypervolume() method, got {type(self.solution_composition_).__name__}."
+            )
+        return metric
+    
     def _current_convergence_metric(self):
-        if hasattr(self.solution_composition_, "hypervolume"):
+        metric = self.convergence_metric_
+        if callable(metric):
+            return metric(self.solution_composition_)
+        if metric == "hypervolume":
             return self.solution_composition_.hypervolume()
         return self.solution_composition_.elitist().fitness_
 
@@ -160,7 +193,7 @@ class SupRB(BaseRegressor):
             return False
         
         current = self._current_convergence_metric()
-        print(f"current Hypervolume  elitist fittnes {current}")
+        print(f"current convergence metric ({self.convergence_metric_ if isinstance(self.convergence_metric_, str) else 'custom'}): {current}")
 
         fitness_diff = current - self.previous_fitness_
 
@@ -227,6 +260,8 @@ class SupRB(BaseRegressor):
         self._validate_matching_type(default=OrderedBound(np.array([])))
         self._validate_logger(default=DefaultLogger())
 
+        self.convergence_metric_ = self._resolve_convergence_metric() if self._convergence_enabled() else None
+
         self._propagate_component_parameters()
         self._init_bounds(X)
         self._init_matching_type()
@@ -262,7 +297,8 @@ class SupRB(BaseRegressor):
 
             self.n_rules_increment_ = self.adaptive_rules()
 
-            self.previous_fitness_ = self._current_convergence_metric()
+            if self._convergence_enabled():
+                self.previous_fitness_ = self._current_convergence_metric()
 
         self.elitist_ = self.solution_composition_.elitist().clone()
         self.is_fitted_ = True
