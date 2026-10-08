@@ -63,10 +63,9 @@ class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
                 rules,
             )
         )
-    
 
     def _apply_subsumption(self, X: np.ndarray, y: np.ndarray, rules: list[Rule]) -> list[Rule]:
-        
+
         if self.subsumption is None:
             return rules
 
@@ -78,7 +77,7 @@ class RuleDiscovery(BaseOptimizer, metaclass=ABCMeta):
                 continue
             if replace_idx is not None:
                 if replace_idx < len(self.pool_):
-                    self.pool_[replace_idx] = new_rule          # replaces an existing pool rule
+                    self.pool_[replace_idx] = new_rule  # replaces an existing pool rule
                 else:
                     to_append[replace_idx - len(self.pool_)] = new_rule  # replaces a sibling new rule
             else:

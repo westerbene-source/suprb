@@ -71,6 +71,14 @@ class SupRB(BaseRegressor):
         Sets the patience for how many iteration we try to find a better result before we do an early stopping (-1 disabling the early stopping).
     early_stopping_delta: int
         The current fitness needs to be higher than this delta of the previous iteration fitness to be considered a "better" iteration
+    extra_rules_patience: int
+        Sets the patience for how many consecutive iterations without a better result we tolerate before
+        generating additional rules (-1 disabling the adaptive extra rules). Once the patience is exceeded,
+        every further iteration without improvement increases the number of extra rules by one.
+    extra_rules_delta: float
+        The current convergence metric needs to be higher than this delta of the previous iteration's value
+        to be considered a "better" iteration. If it is not, the stagnation counter is increased; otherwise
+        the counter and the extra rules are reset to 0.
     convergence_metric: str or callable, default=None
         Metric used for early stopping and adaptive extra rules. Only relevant
         if early_stopping_patience > 0 or extra_rules_patience > 0.
@@ -80,7 +88,6 @@ class SupRB(BaseRegressor):
         - None: "hypervolume" if the solution composition provides it,
           otherwise "fitness" (the previous behaviour)
     """
-
 
     step_: int = 0
 
@@ -116,7 +123,7 @@ class SupRB(BaseRegressor):
         n_jobs: int = 1,
         early_stopping_patience: int = -1,
         early_stopping_delta: float = 0,
-        extra_rules_patience : int = -1,
+        extra_rules_patience: int = -1,
         extra_rules_delta: int = 0,
         convergence_metric: str = None,
     ):
@@ -146,16 +153,14 @@ class SupRB(BaseRegressor):
         if metric is None:
             return "hypervolume" if hasattr(self.solution_composition_, "hypervolume") else "fitness"
         if metric not in ("hypervolume", "fitness"):
-            raise ValueError(
-                f"Unknown convergence_metric {metric!r}; use 'hypervolume', 'fitness' or a callable."
-            )
+            raise ValueError(f"Unknown convergence_metric {metric!r}; use 'hypervolume', 'fitness' or a callable.")
         if metric == "hypervolume" and not hasattr(self.solution_composition_, "hypervolume"):
             raise ValueError(
                 f"convergence_metric='hypervolume' requires a solution composition with a "
                 f"hypervolume() method, got {type(self.solution_composition_).__name__}."
             )
         return metric
-    
+
     def _current_convergence_metric(self):
         metric = self.convergence_metric_
         if callable(metric):
@@ -163,7 +168,6 @@ class SupRB(BaseRegressor):
         if metric == "hypervolume":
             return self.solution_composition_.hypervolume()
         return self.solution_composition_.elitist().fitness_
-
 
     def adaptive_rules(self):
         if self.extra_rules_patience <= 0 or self.step_ == 0:
@@ -185,21 +189,20 @@ class SupRB(BaseRegressor):
         else:
             return 0
 
-            
-
     def check_early_stopping(self):
 
         if self.early_stopping_patience <= 0:
             return False
-        
+
         current = self._current_convergence_metric()
-        print(f"current convergence metric ({self.convergence_metric_ if isinstance(self.convergence_metric_, str) else 'custom'}): {current}")
+        print(
+            f"current convergence metric ({self.convergence_metric_ if isinstance(self.convergence_metric_, str) else 'custom'}): {current}"
+        )
 
         fitness_diff = current - self.previous_fitness_
 
-
         if fitness_diff > self.early_stopping_delta:
-                self.early_stopping_counter_ = 0
+            self.early_stopping_counter_ = 0
         else:
             self.early_stopping_counter_ += 1
             if self.early_stopping_patience <= self.early_stopping_counter_:
@@ -282,7 +285,12 @@ class SupRB(BaseRegressor):
         # Main loop
         for self.step_ in range(self.n_iter):
             # Insert new rules into population
-            if self._catch_errors(self._discover_rules, X, y, initial=False,):
+            if self._catch_errors(
+                self._discover_rules,
+                X,
+                y,
+                initial=False,
+            ):
                 return self
 
             # Optimize solutions
@@ -332,9 +340,9 @@ class SupRB(BaseRegressor):
 
     def _discover_rules(self, X: np.ndarray, y: np.ndarray, initial: bool, max_restarts: int = 0):
         """Performs the rule discovery / rule generation (RG) process."""
-        
+
         n_rules = self.n_initial_rules if initial else self.n_rules + self.n_rules_increment_
-        
+
         self._log_to_stdout(f"Generating {n_rules} rules", priority=4)
         self.rule_discovery_.elitist_ = self.solution_composition_.elitist()
 
@@ -363,8 +371,7 @@ class SupRB(BaseRegressor):
 
         if not self.pool_:
             warnings.warn(
-                "The population is empty, even after generating rules. "
-                "Solution optimization will be skipped.",
+                "The population is empty, even after generating rules. " "Solution optimization will be skipped.",
                 PopulationEmptyWarning,
             )
 

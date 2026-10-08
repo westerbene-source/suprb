@@ -38,9 +38,9 @@ def bounds_contains(outer: np.ndarray, inner: np.ndarray) -> bool:
 
 def local_error_on_subset(containing_rule: Rule, X: np.ndarray, y: np.ndarray, subset_mask: np.ndarray) -> float:
 
-        X_sub, y_sub = X[subset_mask], y[subset_mask]
-        pred_sub = containing_rule.predict(X_sub)
-        return max(mean_squared_error(y_sub, pred_sub), 1e-4)
+    X_sub, y_sub = X[subset_mask], y[subset_mask]
+    pred_sub = containing_rule.predict(X_sub)
+    return max(mean_squared_error(y_sub, pred_sub), 1e-4)
 
 
 class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
@@ -55,14 +55,13 @@ class RuleSubsumption(BaseComponent, metaclass=ABCMeta):
       (c) leaves the new rule to be appended normally, if neither applies.
     """
 
-    tolerance: float = 0.0  
+    tolerance: float = 0.0
 
     @abstractmethod
     def resolve_mutual(self, rule_a: Rule, rule_b: Rule) -> tuple[Rule, Rule]:
         """Given two mutually-subsuming rules, return (winner, loser).
         `loser`'s numerosity is folded into `winner`."""
         pass
-
 
     def __call__(self, new_rule: Rule, pool: list[Rule], X: np.ndarray, y: np.ndarray) -> tuple[bool, Optional[int]]:
         new_bounds = get_effective_bounds(new_rule.match)
